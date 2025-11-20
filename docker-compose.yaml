@@ -1,0 +1,21 @@
+services:
+  browserless:
+    image: browserless/chrome:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - MAX_CONCURRENT_SESSIONS=2
+      - DEFAULT_BLOCK_ADS=true
+      - ENABLE_DEBUGGER=true
+    restart: unless-stopped
+
+  scraper:
+    build: ./
+    ports:
+      - "3002:3000"
+    environment:
+      - PORT=3000
+      - BROWSERLESS_WS=ws://browserless:3001?ws=true
+    depends_on:
+      - browserless
+    restart: unless-stopped

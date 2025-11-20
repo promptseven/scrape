@@ -1,7 +1,7 @@
 // app.js
-const express = require('express')
-const bodyParser = require('body-parser')
-const puppeteer = require('puppeteer-core')
+import express from 'express'
+import bodyParser from 'body-parser'
+import puppeteer from 'puppeteer-core'
 
 const app = express()
 app.use(bodyParser.json({ limit: '10mb' }))
