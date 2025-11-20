@@ -54,6 +54,61 @@ async function connectWithRetry(maxRetries = 3, baseDelay = 1000) {
   )
 }
 
+// Robust content extraction with multiple fallback methods
+async function extractPageContent(page, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      if (page.isClosed()) {
+        return '<html><body><!-- Page closed before content extraction --></body></html>'
+      }
+
+      // Method 1: Try page.content() directly
+      console.log(`Content extraction attempt ${attempt}/${maxRetries}...`)
+      const html = await page.content()
+      if (html && html.length > 100) {
+        console.log(`Content extracted successfully (${html.length} chars)`)
+        return html
+      }
+
+      // Method 2: If content is too short, try getting documentElement.outerHTML
+      console.log('Trying alternative content extraction...')
+      const altHtml = await page.evaluate(() => {
+        return document.documentElement.outerHTML
+      })
+
+      if (altHtml && altHtml.length > 100) {
+        console.log(`Alternative content extracted (${altHtml.length} chars)`)
+        return altHtml
+      }
+
+      throw new Error('Content too short or empty')
+    } catch (error) {
+      console.warn(
+        `Content extraction attempt ${attempt} failed:`,
+        error.message,
+      )
+
+      if (attempt < maxRetries) {
+        // Wait before retry
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
+
+        // Try to wait for page stability
+        try {
+          if (!page.isClosed()) {
+            await new Promise((resolve) => setTimeout(resolve, 500))
+          }
+        } catch (e) {
+          // Ignore wait errors
+        }
+      } else {
+        // Last attempt failed, return fallback
+        console.error('All content extraction attempts failed')
+        return '<html><body><!-- Content extraction failed after retries --></body></html>'
+      }
+    }
+  }
+}
+
 // Scroll to bottom repeatedly (up to maxScrolls) and wait until the
 // target container's DOM tree stops growing (no new elements) for a
 // continuous idle period (`idleMs`). The function respects an overall
@@ -131,6 +186,13 @@ async function scrollToBottomAndWaitForStability(
     let stableStart = null
     while (Date.now() < endTime) {
       await new Promise((r) => setTimeout(r, checkIntervalMs))
+
+      // Check page state before counting elements
+      if (page.isClosed()) {
+        console.warn('Page closed during stability check, stopping')
+        return false
+      }
+
       const cur = await getCount()
       if (cur === lastCount) {
         if (!stableStart) stableStart = Date.now()
@@ -216,7 +278,7 @@ app.post('/scrape', async (req, res) => {
     })
 
     // Many client-side frameworks render after network activity; wait for network idle
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 })
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 900000 })
 
     // Detect scrollable container and mark it with an attribute selector
     if (!browser.isConnected()) {
@@ -258,20 +320,12 @@ app.post('/scrape', async (req, res) => {
       console.warn('scrolling did not reach stability before timeout')
     }
 
-    // After stabilization, grab the complete page HTML
-    let html = ''
-    try {
-      if (!page.isClosed()) {
-        html = await page.content()
-      }
-    } catch (e) {
-      console.warn(
-        'Failed to get page content, frame may be detached:',
-        e.message,
-      )
-      html =
-        '<html><body><!-- Frame detached during content extraction --></body></html>'
-    }
+    // Wait a bit more for final rendering after scrolling stops
+    console.log('Waiting for final page rendering...')
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+
+    // After stabilization, grab the complete page HTML using robust extraction
+    const html = await extractPageContent(page)
 
     // Close page but do not close the shared remote browser
     try {
