@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   scraper:
-    image: ghcr.io/promptseven/scrape
+    image: ghcr.io/promptseven/scrape:latest
     ports:
       - '3001:3001'
     environment:
