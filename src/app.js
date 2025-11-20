@@ -7,11 +7,11 @@ const app = express()
 app.use(bodyParser.json({ limit: '10mb' }))
 
 const DEFAULTS = {
-  maxScrolls: 400,
-  scrollDelayMs: 20000,
+  maxScrolls: 40,
+  scrollDelayMs: 10000,
   headless: true,
   viewport: { width: 1200, height: 900 },
-  timeoutMs: 1200000, // 20 minutes
+  timeoutMs: 120000, // 2 minutes
 }
 
 // BROWSERLESS_WS should be like: ws://browserless:3000?ws=true or ws://browserless:3000?token=YOUR_TOKEN
@@ -33,14 +33,21 @@ async function scrollToBottomAndWaitForStability(
   const endTime = Date.now() + timeoutMs
 
   // helper to get number of nodes inside the element (or document)
-  const getCount = async () =>
-    page.evaluate((sel) => {
-      const el =
-        document.querySelector(sel) ||
-        document.scrollingElement ||
-        document.body
-      return el.querySelectorAll('*').length
-    }, selector)
+  const getCount = async () => {
+    try {
+      if (page.isClosed()) return 0
+      return await page.evaluate((sel) => {
+        const el =
+          document.querySelector(sel) ||
+          document.scrollingElement ||
+          document.body
+        return el.querySelectorAll('*').length
+      }, selector)
+    } catch (e) {
+      // Frame detached or page closed
+      return 0
+    }
+  }
 
   let lastCount = await getCount()
 
@@ -50,23 +57,30 @@ async function scrollToBottomAndWaitForStability(
     attempt++
   ) {
     // scroll the target to its bottom
-    await page.evaluate((sel) => {
-      const el =
-        document.querySelector(sel) ||
-        document.scrollingElement ||
-        document.body
-      try {
-        if (
-          el === document.scrollingElement ||
-          el === document.body ||
-          el === document.documentElement
-        ) {
-          window.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
-        } else {
-          el.scrollTop = el.scrollHeight
-        }
-      } catch (e) {}
-    }, selector)
+    try {
+      if (page.isClosed()) break
+      await page.evaluate((sel) => {
+        const el =
+          document.querySelector(sel) ||
+          document.scrollingElement ||
+          document.body
+        try {
+          if (
+            el === document.scrollingElement ||
+            el === document.body ||
+            el === document.documentElement
+          ) {
+            window.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+          } else {
+            el.scrollTop = el.scrollHeight
+          }
+        } catch (e) {}
+      }, selector)
+    } catch (e) {
+      // Frame detached, break out of scroll loop
+      console.warn('Frame detached during scroll, stopping')
+      break
+    }
 
     // Wait and observe until no new elements are added for idleMs
     let stableStart = null
@@ -93,26 +107,32 @@ async function scrollToBottomAndWaitForStability(
 // Find the most likely scrollable container and mark it with a temporary attribute
 // so other functions can reference it via selector.
 async function getScrollTargetSelector(page) {
-  const sel = await page.evaluate(() => {
-    try {
-      const nodes = Array.from(document.querySelectorAll('body, html, *'))
-      let best = document.scrollingElement || document.body
-      let bestDelta = (best.scrollHeight || 0) - (best.clientHeight || 0)
-      for (const n of nodes) {
-        const delta = (n.scrollHeight || 0) - (n.clientHeight || 0)
-        if (delta > bestDelta) {
-          best = n
-          bestDelta = delta
+  try {
+    if (page.isClosed()) return '[data-scrape-scroll="1"]'
+    const sel = await page.evaluate(() => {
+      try {
+        const nodes = Array.from(document.querySelectorAll('body, html, *'))
+        let best = document.scrollingElement || document.body
+        let bestDelta = (best.scrollHeight || 0) - (best.clientHeight || 0)
+        for (const n of nodes) {
+          const delta = (n.scrollHeight || 0) - (n.clientHeight || 0)
+          if (delta > bestDelta) {
+            best = n
+            bestDelta = delta
+          }
         }
+        // mark the element so we can use a selector from node context
+        best.setAttribute('data-scrape-scroll', '1')
+        return '[data-scrape-scroll="1"]'
+      } catch (e) {
+        return '[data-scrape-scroll="1"]'
       }
-      // mark the element so we can use a selector from node context
-      best.setAttribute('data-scrape-scroll', '1')
-      return '[data-scrape-scroll="1"]'
-    } catch (e) {
-      return '[data-scrape-scroll="1"]'
-    }
-  })
-  return sel
+    })
+    return sel
+  } catch (e) {
+    // Frame detached, return fallback
+    return '[data-scrape-scroll="1"]'
+  }
 }
 
 // Wait until a specific element's innerHTML length stabilizes
@@ -176,7 +196,19 @@ app.post('/scrape', async (req, res) => {
     }
 
     // After stabilization, grab the complete page HTML
-    const html = await page.content()
+    let html = ''
+    try {
+      if (!page.isClosed()) {
+        html = await page.content()
+      }
+    } catch (e) {
+      console.warn(
+        'Failed to get page content, frame may be detached:',
+        e.message,
+      )
+      html =
+        '<html><body><!-- Frame detached during content extraction --></body></html>'
+    }
 
     // Close page but do not close the shared remote browser
     await page.close()
@@ -184,7 +216,20 @@ app.post('/scrape', async (req, res) => {
     await browser.disconnect()
 
     const took = Date.now() - start
-    return res.json({ meta: { took }, html })
+    return res.json({
+      meta: {
+        took,
+        stable: !!stable,
+        settings: {
+          maxScrolls,
+          scrollDelayMs,
+          timeoutMs,
+          stabilityIdleMs,
+          checkIntervalMs,
+        },
+      },
+      html,
+    })
   } catch (err) {
     try {
       if (browser) await browser.disconnect()
