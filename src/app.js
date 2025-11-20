@@ -25,7 +25,7 @@ async function infiniteScroll(page, maxScrolls, delayMs) {
   let lastHeight = await page.evaluate(() => document.body.scrollHeight)
   for (let i = 0; i < maxScrolls; i++) {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-    await page.waitForTimeout(delayMs)
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
 
     try {
       await page.waitForNetworkIdle({ idleTime: 500, timeout: 2000 })
@@ -35,7 +35,7 @@ async function infiniteScroll(page, maxScrolls, delayMs) {
 
     const newHeight = await page.evaluate(() => document.body.scrollHeight)
     if (newHeight === lastHeight) {
-      await page.waitForTimeout(500) // grace period
+      await new Promise((resolve) => setTimeout(resolve, 500)) // grace period
       const confirm = await page.evaluate(() => document.body.scrollHeight)
       if (confirm === lastHeight) break
       lastHeight = confirm
