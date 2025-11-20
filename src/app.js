@@ -7,8 +7,10 @@ const app = express()
 app.use(bodyParser.json({ limit: '10mb' }))
 
 const DEFAULTS = {
-  maxScrolls: 20,
+  maxScrolls: 0,
   scrollDelayMs: 2000,
+  scrollPostDelayMs: 2000,
+  idleTimeoutMs: 30000,
   headless: true,
   viewport: { width: 1200, height: 900 },
   baseTimeoutMs: 10000,
@@ -35,7 +37,14 @@ const BROWSERLESS_WS =
 app.post('/scrape', async (req, res) => {
   const start = Date.now()
   const input = { ...DEFAULTS, ...(req.body || {}) }
-  const { url, maxScrolls, scrollDelayMs, baseTimeoutMs } = input
+  const {
+    url,
+    maxScrolls,
+    scrollDelayMs,
+    scrollPostDelayMs,
+    idleTimeoutMs,
+    baseTimeoutMs,
+  } = input
   const timeoutMs = maxScrolls * scrollDelayMs + baseTimeoutMs
 
   if (!url)
@@ -68,7 +77,7 @@ app.post('/scrape', async (req, res) => {
     // Many client-side frameworks render after network activity; wait until idle
     await page.goto(url, {
       waitUntil: 'networkidle0',
-      timeout: timeoutMs + 30000,
+      timeout: idleTimeoutMs,
     })
 
     // Validate connection before starting scroll
@@ -90,7 +99,7 @@ app.post('/scrape', async (req, res) => {
 
     // Wait a bit more for final rendering after scrolling stops
     console.log('Waiting for final page rendering...')
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    await new Promise((resolve) => setTimeout(resolve, scrollPostDelayMs))
 
     // Content extraction
     const contentExtractionFunction =
