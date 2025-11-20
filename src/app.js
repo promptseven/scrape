@@ -7,14 +7,11 @@ const app = express()
 app.use(bodyParser.json({ limit: '10mb' }))
 
 const DEFAULTS = {
-  itemSelector: 'article.post',
-  titleSelector: 'h2',
-  linkSelector: 'a',
   maxScrolls: 40,
-  scrollDelayMs: 800,
+  scrollDelayMs: 1000,
   headless: true,
   viewport: { width: 1200, height: 900 },
-  timeoutMs: 120000,
+  timeoutMs: 120000, // 2 minutes
 }
 
 // BROWSERLESS_WS should be like: ws://browserless:3000?ws=true or ws://browserless:3000?token=YOUR_TOKEN
@@ -48,15 +45,7 @@ async function infiniteScroll(page, maxScrolls, delayMs) {
 app.post('/scrape', async (req, res) => {
   const start = Date.now()
   const input = { ...DEFAULTS, ...(req.body || {}) }
-  const {
-    url,
-    itemSelector,
-    titleSelector,
-    linkSelector,
-    maxScrolls,
-    scrollDelayMs,
-    timeoutMs,
-  } = input
+  const { url, maxScrolls, scrollDelayMs, timeoutMs } = input
 
   if (!url)
     return res.status(400).json({ error: 'Missing "url" in request body' })
@@ -81,21 +70,8 @@ app.post('/scrape', async (req, res) => {
       ),
     ])
 
-    const results = await page.$$eval(
-      itemSelector,
-      (nodes, titleSel, linkSel) =>
-        nodes.map((node) => {
-          const titleEl = node.querySelector(titleSel)
-          const linkEl = node.querySelector(linkSel)
-          return {
-            title: titleEl ? titleEl.innerText.trim() : null,
-            url: linkEl ? linkEl.href || linkEl.getAttribute('href') : null,
-            html: node.innerHTML,
-          }
-        }),
-      titleSelector,
-      linkSelector,
-    )
+    // After scrolling, grab the complete page HTML
+    const html = await page.content()
 
     // Close page but do not close the shared remote browser
     await page.close()
@@ -103,7 +79,7 @@ app.post('/scrape', async (req, res) => {
     await browser.disconnect()
 
     const took = Date.now() - start
-    return res.json({ meta: { count: results.length, took }, results })
+    return res.json({ meta: { took }, html })
   } catch (err) {
     try {
       if (browser) await browser.disconnect()
