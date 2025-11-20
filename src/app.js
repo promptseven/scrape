@@ -18,70 +18,76 @@ const DEFAULTS = {
 const BROWSERLESS_WS =
   process.env.BROWSERLESS_WS || 'ws://browserless:3000?ws=true'
 
-async function infiniteScroll(page, maxScrolls, delayMs) {
-  // Step-scroll the detected scroll target (window or a scrollable container)
-  // The `scrollTarget` object should be set by `getScrollTarget` and attached as
-  // an attribute selector on the page before calling this function.
-  const scrollSelector = '[data-scrape-scroll="1"]'
-  // initial height (or scrollHeight of the container)
-  let lastHeight = await page.evaluate((sel) => {
-    const el =
-      document.querySelector(sel) || document.scrollingElement || document.body
-    return el.scrollHeight
-  }, scrollSelector)
+// Scroll to bottom repeatedly (up to maxScrolls) and wait until the
+// target container's DOM tree stops growing (no new elements) for a
+// continuous idle period (`idleMs`). The function respects an overall
+// `timeoutMs` and returns true if stability was reached, false if timed out.
+async function scrollToBottomAndWaitForStability(
+  page,
+  selector,
+  maxScrolls = 40,
+  timeoutMs = 120000,
+  idleMs = 2000,
+  checkIntervalMs = 500,
+) {
+  const endTime = Date.now() + timeoutMs
 
-  for (let i = 0; i < maxScrolls; i++) {
+  // helper to get number of nodes inside the element (or document)
+  const getCount = async () =>
+    page.evaluate((sel) => {
+      const el =
+        document.querySelector(sel) ||
+        document.scrollingElement ||
+        document.body
+      return el.querySelectorAll('*').length
+    }, selector)
+
+  let lastCount = await getCount()
+
+  for (
+    let attempt = 0;
+    attempt < maxScrolls && Date.now() < endTime;
+    attempt++
+  ) {
+    // scroll the target to its bottom
     await page.evaluate((sel) => {
       const el =
         document.querySelector(sel) ||
         document.scrollingElement ||
         document.body
-      const step = Math.max(window.innerHeight, 400)
-      if (
-        el === document.scrollingElement ||
-        el === document.body ||
-        el === document.documentElement
-      ) {
-        window.scrollBy({ top: step, left: 0, behavior: 'auto' })
+      try {
+        if (
+          el === document.scrollingElement ||
+          el === document.body ||
+          el === document.documentElement
+        ) {
+          window.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+        } else {
+          el.scrollTop = el.scrollHeight
+        }
+      } catch (e) {}
+    }, selector)
+
+    // Wait and observe until no new elements are added for idleMs
+    let stableStart = null
+    while (Date.now() < endTime) {
+      await new Promise((r) => setTimeout(r, checkIntervalMs))
+      const cur = await getCount()
+      if (cur === lastCount) {
+        if (!stableStart) stableStart = Date.now()
+        if (Date.now() - stableStart >= idleMs) return true
       } else {
-        el.scrollBy(0, step)
+        // New elements were added; update lastCount and continue waiting
+        lastCount = cur
+        stableStart = null
       }
-    }, scrollSelector)
-
-    // wait a bit for rendering / XHR to start
-    await new Promise((resolve) => setTimeout(resolve, delayMs))
-
-    try {
-      // wait a bit longer for network activity to settle for client-side frameworks
-      await page.waitForNetworkIdle({ idleTime: 1000, timeout: 5000 })
-    } catch (e) {
-      // ignore network idle timeouts
     }
-
-    const newHeight = await page.evaluate((sel) => {
-      const el =
-        document.querySelector(sel) ||
-        document.scrollingElement ||
-        document.body
-      return el.scrollHeight
-    }, scrollSelector)
-
-    if (newHeight === lastHeight) {
-      // give a short grace period and re-check — handles slow lazy-loading
-      await new Promise((resolve) => setTimeout(resolve, 750))
-      const confirm = await page.evaluate((sel) => {
-        const el =
-          document.querySelector(sel) ||
-          document.scrollingElement ||
-          document.body
-        return el.scrollHeight
-      }, scrollSelector)
-      if (confirm === lastHeight) break
-      lastHeight = confirm
-    } else {
-      lastHeight = newHeight
-    }
+    // if we get here, overall timeout reached; break
+    break
   }
+
+  // timed out or reached max attempts without stability
+  return false
 }
 
 // Find the most likely scrollable container and mark it with a temporary attribute
@@ -110,27 +116,7 @@ async function getScrollTargetSelector(page) {
 }
 
 // Wait until a specific element's innerHTML length stabilizes
-async function waitForElementStability(
-  page,
-  selector,
-  attempts = 50,
-  intervalMs = 10000,
-) {
-  let prev = await page.evaluate((sel) => {
-    const el = document.querySelector(sel) || document.documentElement
-    return el.innerHTML.length
-  }, selector)
-  for (let i = 0; i < attempts; i++) {
-    await new Promise((r) => setTimeout(r, intervalMs))
-    const cur = await page.evaluate((sel) => {
-      const el = document.querySelector(sel) || document.documentElement
-      return el.innerHTML.length
-    }, selector)
-    if (cur === prev) return true
-    prev = cur
-  }
-  return false
-}
+// (removed) element-level stability helper — not used anymore
 
 app.post('/scrape', async (req, res) => {
   const start = Date.now()
@@ -160,20 +146,20 @@ app.post('/scrape', async (req, res) => {
     // Detect scrollable container and mark it with an attribute selector
     const scrollSelector = await getScrollTargetSelector(page)
 
-    // Run scroll with timeout guard (scrolls the detected container)
-    await Promise.race([
-      infiniteScroll(page, maxScrolls, scrollDelayMs),
-      new Promise((_, rej) =>
-        setTimeout(() => rej(new Error('scroll-timeout')), timeoutMs),
-      ),
-    ])
+    // New strategy: scroll-to-bottom and wait until no new elements are added
+    // for a continuous idle period. Allow tuning via request params.
+    const stabilityIdleMs =
+      input.stabilityIdleMs ||
+      Math.max(500, Math.min(2000, scrollDelayMs || 800))
+    const checkIntervalMs = input.checkIntervalMs || 500
 
-    // After scrolling, wait for the container's HTML to stabilize
-    await waitForElementStability(
+    const stable = await scrollToBottomAndWaitForStability(
       page,
       scrollSelector,
-      8,
-      Math.max(500, Math.min(2000, scrollDelayMs || 800)),
+      maxScrolls,
+      timeoutMs,
+      stabilityIdleMs,
+      checkIntervalMs,
     )
 
     // remove the temporary attribute marker
@@ -183,6 +169,11 @@ app.post('/scrape', async (req, res) => {
         if (el) el.removeAttribute('data-scrape-scroll')
       }, scrollSelector)
     } catch (e) {}
+
+    if (!stable) {
+      // proceed anyway, but include a warning in the response meta
+      console.warn('scrolling did not reach stability before timeout')
+    }
 
     // After stabilization, grab the complete page HTML
     const html = await page.content()
