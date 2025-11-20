@@ -2,6 +2,7 @@
   "name": "scrape",
   "version": "0.1.0",
   "description": "Scrape infinite websites.",
+  "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/promptseven/scrape.git"
@@ -22,13 +23,5 @@
   "bugs": {
     "url": "https://github.com/promptseven/scrape/issues"
   },
-  "homepage": "https://github.com/promptseven/scrape#readme",
-  "module": "index.ts",
-  "private": true,
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  }
+  "homepage": "https://github.com/promptseven/scrape#readme"
 }
