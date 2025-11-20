@@ -7,12 +7,11 @@ const app = express()
 app.use(bodyParser.json({ limit: '10mb' }))
 
 const DEFAULTS = {
-  maxScrolls: 40,
-  scrollDelayMs: 5000,
+  maxScrolls: 20,
+  scrollDelayMs: 2000,
   headless: true,
   viewport: { width: 1200, height: 900 },
   baseTimeoutMs: 10000,
-  newItemTimeoutMs: 2000,
 }
 
 const BROWSERLESS_WS =
@@ -21,8 +20,7 @@ const BROWSERLESS_WS =
 app.post('/scrape', async (req, res) => {
   const start = Date.now()
   const input = { ...DEFAULTS, ...(req.body || {}) }
-  const { url, maxScrolls, scrollDelayMs, baseTimeoutMs, newItemTimeoutMs } =
-    input
+  const { url, maxScrolls, scrollDelayMs, baseTimeoutMs } = input
   const timeoutMs = maxScrolls * scrollDelayMs + baseTimeoutMs
 
   if (!url)
@@ -65,12 +63,14 @@ app.post('/scrape', async (req, res) => {
 
     // Perform scrolling to load dynamic content
     let previousHeight
-    while (true) {
+    let scrolls = 0
+    while (scrolls < maxScrolls) {
       previousHeight = await page.evaluate('document.body.scrollHeight')
       await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-      await new Promise((resolve) => setTimeout(resolve, newItemTimeoutMs)) // Wait for new items to load
+      await new Promise((resolve) => setTimeout(resolve, scrollDelayMs)) // Wait for new items to load
       const currentHeight = await page.evaluate('document.body.scrollHeight')
       if (currentHeight === previousHeight) break // Stop if nothing new was added
+      scrolls++
     }
 
     // Wait a bit more for final rendering after scrolling stops
@@ -99,16 +99,16 @@ app.post('/scrape', async (req, res) => {
     }
 
     const duration = Date.now() - start
+    const usedScrolls = scrolls
     return res.json({
       meta: {
         url,
         duration,
         settings: {
+          usedScrolls,
           maxScrolls,
           scrollDelayMs,
           timeoutMs,
-          stabilityIdleMs,
-          checkIntervalMs,
         },
       },
       html,
