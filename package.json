@@ -1,0 +1,26 @@
+{
+  "name": "scrape",
+  "version": "0.1.0",
+  "description": "Scrape infinite websites.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/promptseven/scrape.git"
+  },
+  "keywords": [
+    "scrape",
+    "webscrape",
+    "crawler",
+    "scraper",
+    "webcrawler",
+    "html",
+    "website",
+    "infinite"
+  ],
+  "author": "Valentin Vogel",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/promptseven/scrape/issues"
+  },
+  "homepage": "https://github.com/promptseven/scrape#readme"
+}
