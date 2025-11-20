@@ -29,7 +29,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node src/app.js"
+    "start": "node src/app.js",
+    "compose:restart": "docker compose up -d --build --force-recreate"
   },
   "dependencies": {
     "body-parser": "^2.2.0",

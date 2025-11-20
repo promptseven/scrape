@@ -12,6 +12,21 @@ const DEFAULTS = {
   headless: true,
   viewport: { width: 1200, height: 900 },
   baseTimeoutMs: 10000,
+  contentExtraction: 'html',
+}
+
+const CONTENT_EXTRACTION_FUNCTIONS = {
+  html: async (page) => {
+    return await page.content()
+  },
+  body: async (page) => {
+    return await page.evaluate(() => document.body.innerHTML)
+  },
+  links: async (page) => {
+    return await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a')).map((a) => a.href)
+    })
+  },
 }
 
 const BROWSERLESS_WS =
@@ -77,8 +92,11 @@ app.post('/scrape', async (req, res) => {
     console.log('Waiting for final page rendering...')
     await new Promise((resolve) => setTimeout(resolve, 2000))
 
-    // After stabilization, grab the complete page HTML using robust extraction
-    const html = await page.content()
+    // Content extraction
+    const contentExtractionFunction =
+      CONTENT_EXTRACTION_FUNCTIONS[input.contentExtraction] ||
+      CONTENT_EXTRACTION_FUNCTIONS.html
+    const extractedContent = await contentExtractionFunction(page)
 
     // Close page but do not close the shared remote browser
     try {
@@ -111,7 +129,7 @@ app.post('/scrape', async (req, res) => {
           timeoutMs,
         },
       },
-      html,
+      extractedContent,
     })
   } catch (err) {
     console.error('Scraping error:', err.message)
