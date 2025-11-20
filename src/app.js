@@ -8,15 +8,51 @@ app.use(bodyParser.json({ limit: '10mb' }))
 
 const DEFAULTS = {
   maxScrolls: 40,
-  scrollDelayMs: 10000,
+  scrollDelayMs: 5000,
   headless: true,
   viewport: { width: 1200, height: 900 },
-  timeoutMs: 120000, // 2 minutes
+  timeoutMs: 1200000, // 20 minutes
 }
 
 // BROWSERLESS_WS should be like: ws://browserless:3000?ws=true or ws://browserless:3000?token=YOUR_TOKEN
 const BROWSERLESS_WS =
   process.env.BROWSERLESS_WS || 'ws://browserless:3000?ws=true'
+
+// Retry browser connection with exponential backoff
+async function connectWithRetry(maxRetries = 3, baseDelay = 1000) {
+  let lastError
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Attempting browser connection (${attempt}/${maxRetries})...`)
+      const browser = await puppeteer.connect({
+        browserWSEndpoint: BROWSERLESS_WS,
+        ignoreHTTPSErrors: true,
+        timeout: 30000, // 30 second connection timeout
+      })
+
+      // Validate connection is working
+      if (browser.isConnected()) {
+        console.log('Browser connection established successfully')
+        return browser
+      } else {
+        await browser.disconnect().catch(() => {})
+        throw new Error('Browser connected but not ready')
+      }
+    } catch (error) {
+      lastError = error
+      console.warn(`Connection attempt ${attempt} failed:`, error.message)
+
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1)
+        console.log(`Retrying in ${delay}ms...`)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+    }
+  }
+  throw new Error(
+    `Failed to connect after ${maxRetries} attempts: ${lastError.message}`,
+  )
+}
 
 // Scroll to bottom repeatedly (up to maxScrolls) and wait until the
 // target container's DOM tree stops growing (no new elements) for a
@@ -27,7 +63,7 @@ async function scrollToBottomAndWaitForStability(
   selector,
   maxScrolls = 40,
   timeoutMs = 120000,
-  idleMs = 2000,
+  idleMs = 1000,
   checkIntervalMs = 500,
 ) {
   const endTime = Date.now() + timeoutMs
@@ -56,6 +92,12 @@ async function scrollToBottomAndWaitForStability(
     attempt < maxScrolls && Date.now() < endTime;
     attempt++
   ) {
+    // Check if page is still connected before each scroll
+    if (page.isClosed()) {
+      console.warn('Page closed during scroll, stopping')
+      break
+    }
+
     // scroll the target to its bottom
     try {
       if (page.isClosed()) break
@@ -77,8 +119,11 @@ async function scrollToBottomAndWaitForStability(
         } catch (e) {}
       }, selector)
     } catch (e) {
-      // Frame detached, break out of scroll loop
-      console.warn('Frame detached during scroll, stopping')
+      // Frame detached or connection lost, break out of scroll loop
+      console.warn(
+        'Frame detached or connection lost during scroll, stopping:',
+        e.message,
+      )
       break
     }
 
@@ -147,23 +192,36 @@ app.post('/scrape', async (req, res) => {
     return res.status(400).json({ error: 'Missing "url" in request body' })
 
   let browser
+  let page
   try {
-    // Connect to browserless remote browser
-    browser = await puppeteer.connect({
-      browserWSEndpoint: BROWSERLESS_WS,
-      ignoreHTTPSErrors: true,
-    })
+    // Connect to browserless remote browser with retry logic
+    browser = await connectWithRetry()
 
-    const page = await browser.newPage()
+    // Validate browser connection before proceeding
+    if (!browser.isConnected()) {
+      throw new Error('Browser connection lost immediately after connect')
+    }
+
+    page = await browser.newPage()
     await page.setViewport(input.viewport)
+
     // Set a common browser user-agent to reduce bot-blocking
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
     )
+
+    // Add connection lost handler
+    browser.on('disconnected', () => {
+      console.warn('Browser connection lost during operation')
+    })
+
     // Many client-side frameworks render after network activity; wait for network idle
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 })
 
     // Detect scrollable container and mark it with an attribute selector
+    if (!browser.isConnected()) {
+      throw new Error('Browser connection lost before scroll detection')
+    }
     const scrollSelector = await getScrollTargetSelector(page)
 
     // New strategy: scroll-to-bottom and wait until no new elements are added
@@ -172,6 +230,11 @@ app.post('/scrape', async (req, res) => {
       input.stabilityIdleMs ||
       Math.max(500, Math.min(2000, scrollDelayMs || 800))
     const checkIntervalMs = input.checkIntervalMs || 500
+
+    // Validate connection before starting scroll
+    if (!browser.isConnected()) {
+      throw new Error('Browser connection lost before scrolling')
+    }
 
     const stable = await scrollToBottomAndWaitForStability(
       page,
@@ -211,9 +274,22 @@ app.post('/scrape', async (req, res) => {
     }
 
     // Close page but do not close the shared remote browser
-    await page.close()
+    try {
+      if (page && !page.isClosed()) {
+        await page.close()
+      }
+    } catch (e) {
+      console.warn('Error closing page:', e.message)
+    }
+
     // disconnect client
-    await browser.disconnect()
+    try {
+      if (browser && browser.isConnected()) {
+        await browser.disconnect()
+      }
+    } catch (e) {
+      console.warn('Error disconnecting browser:', e.message)
+    }
 
     const took = Date.now() - start
     return res.json({
@@ -231,9 +307,25 @@ app.post('/scrape', async (req, res) => {
       html,
     })
   } catch (err) {
+    console.error('Scraping error:', err.message)
+
+    // Enhanced cleanup
     try {
-      if (browser) await browser.disconnect()
-    } catch (e) {}
+      if (page && !page.isClosed()) {
+        await page.close()
+      }
+    } catch (e) {
+      console.warn('Error closing page in error handler:', e.message)
+    }
+
+    try {
+      if (browser && browser.isConnected()) {
+        await browser.disconnect()
+      }
+    } catch (e) {
+      console.warn('Error disconnecting browser in error handler:', e.message)
+    }
+
     return res.status(500).json({ error: err.message || String(err) })
   }
 })
