@@ -1,0 +1,16 @@
+# Exclude node_modules from build context so COPY doesn't overwrite image-installed modules
+node_modules
+.pnpm-store
+.pnpm
+pnpm-lock.yaml
+npm-debug.log
+pnpm-debug.log
+dist
+build
+.env
+.git
+.gitignore
+.vscode
+.idea
+Dockerfile
+docker-compose.yml
