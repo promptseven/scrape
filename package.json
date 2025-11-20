@@ -30,11 +30,15 @@
   },
   "scripts": {
     "start": "node src/app.js",
-    "compose:restart": "docker compose up -d --build --force-recreate"
+    "compose:restart": "docker compose up -d --build --force-recreate",
+    "release": "release-it"
   },
   "dependencies": {
     "body-parser": "^2.2.0",
     "express": "^5.1.0",
     "puppeteer-core": "^24.31.0"
+  },
+  "devDependencies": {
+    "release-it": "^19.0.6"
   }
 }
